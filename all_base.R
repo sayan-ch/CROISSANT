@@ -9,6 +9,8 @@ library(irlba)
 library(softImpute)
 library(Matrix)
 library(pROC)
+library(IMIFA)
+library(rlist)
 
 ## CROISSANT
 
@@ -227,7 +229,7 @@ AUC <- function(A, P){
 
 ################################################################################
 
-croissant.comm <- function(A, K.CAND,
+croissant.blockmodel <- function(A, K.CAND,
                            s, o, R, tau = 1, laplace = F,
                            dc.est = 2,
                            loss = c("l2", "bin.dev", "AUC"),
@@ -1101,3 +1103,301 @@ cv.evaluate.all <- function(A,train.index,holdout.index,K,dc.est=1){
               dc.loglike=dc.loglike,dc.l2=dc.l2,dc.auc=dc.auc,
               no.edge=no.edge,impute.err=NA))
 }
+
+
+################################################################################
+################################################################################
+## RDPG generation
+sparse.RDPG.gen <- function(n, d, sparsity.multiplier = 1, ncore = 1){
+  X <- matrix(runif(n*d), nrow = n, ncol = d)
+  
+  X.norm <- X/sqrt(rowSums(X^2))
+  
+  P <- tcrossprod(X.norm)
+  P <- P*sparsity.multiplier
+  diag(P) <- 0
+  
+  stor <- do.call('rbind',
+                  mclapply(1:(n-1), function(i) {
+                    tmp <- which(rbinom(n-i, 1, P[i,(i+1):n]) == 1)
+                    
+                    if(length(tmp) == 0)
+                      return(NULL)
+                    else
+                      return(cbind(rep(i, length(tmp)), i + tmp))
+                  }, mc.cores = ncore))
+  
+  A <- sparseMatrix(i = stor[,1], j = stor[,2], dims = c(n,n), symmetric = T)
+  
+  return(list('A' = A, 'P' = P))
+}
+
+
+################################################################################
+################################################################################
+## Croissant for RDPG
+croissant.rdpg <- function(A, d.cand, s, o, R,
+                           laplace = F,
+                           loss = c("l2", "bin.dev", "AUC"),
+                           ncore = 1){
+  n <- nrow(A)
+  m <- (n-o)/s
+  
+  if(length(d.cand) == 1) d.cand <- 1:d.cand
+  
+  dmax <- max(d.cand)
+  
+  over <- lapply(1:R, function(ii) sample.int(n, o, F))
+  non.over <- lapply(1:R, function(ii) sample((1:n)[-over[[ii]]], n-o, 
+                                              replace = F))
+  
+  raw.ind <- cbind(rep(1:R, each = s), rep(1:s, R))
+  colnames(raw.ind) <- c('r', 's')
+  
+  raw.out <- mclapply(1:nrow(raw.ind), function(ii){
+    
+    q <- raw.ind[ii, 's']
+    r <- raw.ind[ii, 'r']
+    
+    sonn <- c(over[[r]], non.over[[r]][((q-1)*m+1):(q*m)])
+    A.sonn <- A[sonn, sonn]
+    
+    if(!laplace){
+      L.sonn <- A.sonn
+    }else{
+      degree <- rowSums(A.sonn)
+      D <- sparseMatrix(i = 1:(o+m), j = 1:(o+m), x = 1/sqrt(degree))
+      
+      L.sonn <- tcrossprod(crossprod(D, A.sonn), D)
+    }
+    
+    eig <- irlba::irlba(L.sonn, nv = dmax)
+    U <- eig$v
+    sigma.half <- diag(sqrt(abs(eig$d)))
+    
+    X.sonn <- tcrossprod(U, sigma.half)
+    
+    return(X.sonn)
+    
+  },mc.cores = ncore)
+  
+  match.out <- mclapply(1:nrow(raw.ind), function(ii){
+    
+    r <- raw.ind[ii, 'r']
+    q <- raw.ind[ii, 's']
+    #dd <- match.ind[ii, 'dd']
+    
+    #iip <- which(raw.ind[,'r'] == r & raw.ind[,'s'] == q)
+    
+    if(q == 1) return(raw.out[[ii]][-(1:o),])
+    
+    stand <- which(raw.ind[,'r'] == r & raw.ind[,'s'] == 1)
+    
+    proc.mat <- Procrustes(raw.out[[ii]][(1:o), ],
+                           raw.out[[stand]][(1:o), ])$R
+    
+    X.rot <- raw.out[[ii]][-(1:o),] %*% proc.mat
+    
+    return(X.rot)
+    
+  }, mc.cores = ncore)
+  
+  non.size <- s*(s-1)/2
+  ld <- length(d.cand)
+  non.mat <- matrix(nrow = R*non.size*ld, ncol = 4)
+  cc <- 1
+  for(r in 1:R)
+    for(dd in seq_along(d.cand))
+      for(p in 1:(s-1))
+        for(q in (p+1):s){
+          non.mat[cc, ] <- c(r, dd, p, q)
+          cc <- cc + 1
+        }
+  colnames(non.mat) <- c('r', 'dd', 'p', 'q')
+  
+  L.all <- mclapply(1:nrow(non.mat), function(ii){
+    r <- non.mat[ii, 'r']
+    dd <- non.mat[ii, 'dd']
+    p <- non.mat[ii, 'p']
+    q <- non.mat[ii, 'q']
+    
+    p.non <- non.over[[r]][((p-1)*m+1):(p*m)]
+    q.non <- non.over[[r]][((q-1)*m+1):(q*m)]
+    
+    A.non <- A[p.non, q.non]
+    
+    L.temp <- matrix(0, nrow = length(loss), ncol = 1)
+    row.names(L.temp) <- loss
+    colnames(L.temp) <- as.character(d.cand[dd])
+    
+    ind1 <- which(raw.ind[, 'r'] == r & raw.ind[, 's'] == p)
+    ind2 <- which(raw.ind[, 'r'] == r & raw.ind[, 's'] == q)
+    
+    P.hat <- tcrossprod(match.out[[ind1]][,1:d.cand[dd]],
+                        match.out[[ind2]][,1:d.cand[dd]])
+    
+    message(sum(P.hat < 0 | P.hat > 1))
+    
+    P.hat[P.hat < 1e-6] <- 1e-6
+    P.hat[P.hat > 1- 1e-6] <- 1 - 1e-6
+    
+    for(lq in seq_along(loss)){
+      tmp.nm <- loss[lq]
+      L.temp[tmp.nm, 1] <-  L.temp[tmp.nm, 1] +
+        (do.call(loss[lq], list(A.non, P.hat)))/(s*(s-1)*0.5)
+    }
+    
+    return(L.temp)},
+    mc.cores = ncore)
+  
+  L <- list()
+  
+  for(r in 1:R){
+    L[[r]] <- do.call('cbind', lapply(1:ld, function(dd){
+      Reduce('+', L.all[which(non.mat[,'dd'] == dd & non.mat[,'r'] == r)])
+    }))
+    
+    row.names(L[[r]]) <- loss
+    colnames(L[[r]]) <- as.character(d.cand)
+  }
+  
+  obj <- data.table(`Candidate Rank` = d.cand)
+  
+  for(lq in seq_along(loss))
+    for(r in 1:R){
+      obj[[paste0(loss[lq], "-Rep=", r)]] <- 
+        as(rbind(L[[r]][loss[lq], ]), "vector")
+    }
+  
+  obj2 <- list()
+  
+  obj2[["Candidate Rank"]] <- d.cand
+  
+  for(lq in seq_along(loss)){
+    
+    obj2[[paste0("d.hat.each.rep (", loss[lq], ")")]] <- sapply(1:R, function(r){
+      l.rdpg <- d.cand[which.min(L[[r]][loss[lq],])]
+    })
+    
+    
+    obj2[[paste0(loss[lq], ".model")]] <- 
+      modal(obj2[[paste0("d.hat.each.rep (", loss[lq], ")")]])
+  }
+  
+  return(c(list('loss' = obj), 
+           obj2))
+  
+}
+
+##ECV for RDPG
+missing.undirected.Rank.weighted.fast.all <- function(holdout.index,A,max.K,soft=FALSE,fast=fast,p.sample=1){
+  n <- nrow(A)
+  #A.new <- A
+  #A.new[holdout.index] <- NA
+  edge.index <- which(upper.tri(A))
+  edge.n <- length(edge.index)
+  A.new <- matrix(0,n,n)
+  A.new[upper.tri(A.new)] <- A[edge.index]
+  A.new[edge.index[holdout.index]] <- NA
+  A.new <- A.new + t(A.new)
+  diag(A.new) <- diag(A)
+  degrees <- colSums(A.new,na.rm=TRUE)
+  no.edge <- 0
+  no.edge <- sum(degrees==0)
+  
+  Omega <- which(is.na(A.new))
+  imputed.A <- list()
+  sse <- roc.auc <- dev <- rep(0,max.K)
+  SVD.result <- iter.SVD.core.fast.all(A.new,max.K,fast=TRUE,p.sample=p.sample)
+  for(k in 1:max.K){
+    print(k)
+    tmp.est <- SVD.result[[k]]
+    #if(k==1){
+    #A.approx <- matrix(tmp.est$SVD$u,ncol=1)%*%t(matrix(tmp.est$SVD$v,ncol=1))*tmp.est$SVD$d[1]
+    #}else{
+    #   A.approx <- tmp.est$SVD$u%*%t(tmp.est$SVD$v*tmp.est$SVD$d)
+    #}
+    A.approx <- tmp.est$A
+    response <- A[Omega]
+    predictors <- A.approx[Omega]
+    #aa <- AUC::roc(predictions=predictors,labels=factor(response))
+    roc.auc[k] <- AUC(response, predictors)
+    sse[k] <- mean((response-predictors)^2)
+    predictors[predictors < 1e-6] <- 1e-6
+    predictors[predictors > 1-1e-6] <- 1-1e-6
+    dev[k] <- bin.dev(matrix(response, ncol = k), matrix(predictors, ncol = k))
+    imputed.A[[k]] <- A.approx
+  }
+  return(list(imputed.A=imputed.A,Omega=Omega, roc.auc = roc.auc, sse=sse, dev = dev))
+}
+
+ECV.undirected.Rank <- function(A,max.K,B=3,holdout.p=0.1,soft=FALSE,fast=fast){
+  n <- nrow(A)
+  #edge.index <- 1:n^2
+  #edge.n <- length(edge.index)
+  edge.index <- which(upper.tri(A))
+  edge.n <- length(edge.index)
+  
+  holdout.index.list <- list()
+  
+  holdout.n <- floor(holdout.p*edge.n)
+  
+  for(j in 1:B){
+    holdout.index.list[[j]] <- sample(x=edge.n,size=holdout.n)
+  }
+  result <- lapply(holdout.index.list,
+                   missing.undirected.Rank.weighted.fast.all,
+                   A=A,max.K=max.K,soft=soft,fast=fast,p.sample=1-holdout.p)
+  
+  sse.mat <- roc.auc.mat <- dev.mat <- matrix(0,nrow=B,ncol=max.K)
+  
+  for(b in 1:B){
+    roc.auc.mat[b,] <- result[[b]]$roc.auc
+    sse.mat[b,] <- result[[b]]$sse
+    dev.mat[b,] <- result[[b]]$dev
+  }
+  
+  auc.seq <- colMeans(roc.auc.mat)
+  #auc.sd <- apply(roc.auc.mat,2,sd)/sqrt(B)
+  sse.seq <- colMeans(sse.mat)
+  #sse.sd <- apply(sse.mat,2,sd)/sqrt(B)
+  dev.seq <- colMeans(dev.mat)
+  # return(list(sse=sse.seq,sse.sd=sse.sd))
+  return(list(rank.sse=which.min(sse.seq), sse=sse.seq,
+              rank.dev = which.min(dev.seq), dev = dev.seq,
+              rank.auc=which.min(auc.seq),auc=auc.seq
+  ))
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
