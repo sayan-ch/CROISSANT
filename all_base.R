@@ -73,9 +73,11 @@ best.perm.label.match <- function(lab, fixed,
   
   E <- matrix(0, K, K)
   
-  C.lab <- as(sparseMatrix(i = 1:n, j = lab, dims = c(n, K)), 'dMatrix')
-  C.fixed <- as(sparseMatrix(i = 1:n, j = fixed, dims = c(n, K)), 'dMatrix')
-  M <- crossprod(C.lab, C.fixed)
+  # C.lab <- as(sparseMatrix(i = 1:n, j = lab, dims = c(n, K)), 'dMatrix')
+  # C.fixed <- as(sparseMatrix(i = 1:n, j = fixed, dims = c(n, K)), 'dMatrix')
+  # M <- crossprod(C.lab, C.fixed)
+  
+  M <- Rfast::Table(lab, fixed)
   while(max(M) != -1)
   {
     ind <- which(M == max(M), T)[1,]
