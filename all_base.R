@@ -273,6 +273,7 @@ croissant.blockmodel <- function(A, K.CAND,
       L.sonn <- A.sonn.tau
     }else{
       L.sonn <- tcrossprod(crossprod(d.sonn.tau, A.sonn.tau), d.sonn.tau)
+      L.sonn[is.na(L.sonn)] <- 0
     }
     
     #eig.max <- eigs_sym(L.sonn, K.max, "LM")$vectors

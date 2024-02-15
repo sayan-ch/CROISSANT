@@ -248,14 +248,13 @@ croissant.blockmodel <- function(A, K.CAND,
   
   mod <- c("SBM", "DCBM")
   #mod <- mod.cand
-  
+    
   over <- lapply(1:R, function(ii) sample.int(n, o, F))
   non.over <- lapply(1:R, function(ii) sample((1:n)[-over[[ii]]], n-o, replace = F))
   
   raw.ind <- cbind(rep(1:R, each = s), rep(1:s, R))
   
   raw.out <- mclapply(1:nrow(raw.ind), function(ii){
-    
     q <- raw.ind[ii, 2]
     r <- raw.ind[ii, 1]
     
@@ -273,6 +272,7 @@ croissant.blockmodel <- function(A, K.CAND,
       L.sonn <- A.sonn.tau
     }else{
       L.sonn <- tcrossprod(crossprod(d.sonn.tau, A.sonn.tau), d.sonn.tau)
+      L.sonn[is.na(L.sonn)] <- 0
     }
     
     #eig.max <- eigs_sym(L.sonn, K.max, "LM")$vectors
@@ -1518,7 +1518,48 @@ for(i in 1:10){
 ##################
 #####
 
+time.ecv <- vector()
+out.ecv <- list()
 
+time.ncv <- vector()
+out.ncv <- list()
+
+time.cro <- vector()
+out.cro <- list()
+
+ecv.tab <- data.table()
+ncv.tab <- data.table()
+
+cro.tab <- data.table()
+
+for(ii in 1:100){
+  print(ii)
+  net <- randnet::BlockModel.Gen(lambda = 15, n = 600, beta = 0.2, K = 3, 
+                        rho = 1, simple = F)
+  # time.ecv[ii] <- system.time(
+  #               out.ecv[[ii]] <- ECV.for.blockmodel(net$A, 5, B = 3))[3]
+  # 
+  # ecv.tab <- bind_rows(ecv.tab, data.table(l2.model = out.ecv[[ii]]$l2.model,
+  #            bd.model = out.ecv[[ii]]$dev.model,
+  #            auc.model = out.ecv[[ii]]$auc.model))
+  # 
+  # 
+  # time.ncv[ii] <- system.time(
+  #   out.ncv[[ii]] <- NCV.for.blockmodel(net$A, 5, cv = 3, dc.est = 1))[3]
+  # 
+  # ncv.tab <- bind_rows(ncv.tab, data.table(l2.model = out.ncv[[ii]]$l2.model,
+  #                                          bd.model = out.ncv[[ii]]$dev.model,
+  #                                          auc.model = out.ncv[[ii]]$auc.model))
+  
+  time.cro[ii] <- system.time(out.cro[[ii]] <- 
+                                croissant.blockmodel(A = net$A, K.CAND =  5, 
+                                                     s = 3, o = 399, R = 1, tau = 0,
+                                                     laplace = T, dc.est = 2, ncore = 1))[3]
+  
+  cro.tab <- bind_rows(cro.tab, data.table(l2.model = out.cro[[ii]]$l2.model,
+                                           bd.model = out.cro[[ii]]$bin.dev.model,
+                                           auc.model = out.cro[[ii]]$AUC.model))
+}
 
 
 
