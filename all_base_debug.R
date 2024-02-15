@@ -232,10 +232,10 @@ AUC <- function(A, P){
 ################################################################################
 
 croissant.blockmodel <- function(A, K.CAND,
-                           s, o, R, tau = 1, laplace = F,
-                           dc.est = 2,
-                           loss = c("l2", "bin.dev", "AUC"),
-                           ncore = 1){
+                                 s, o, R, tau = 1, laplace = F,
+                                 dc.est = 2,
+                                 loss = c("l2", "bin.dev", "AUC"),
+                                 ncore = 1){
   
   if(length(K.CAND) == 1) K.CAND <- 1:K.CAND
   
@@ -304,9 +304,9 @@ croissant.blockmodel <- function(A, K.CAND,
       rn.eig <- eig.max[,1:work.K]/rownorm
       
       out.DCBM[[k.cand]] <- as.integer(pam(rn.eig, work.K,
-                                          metric = "manhattan",
-                                          cluster.only = T,
-                                          pamonce = 6))
+                                           metric = "manhattan",
+                                           cluster.only = T,
+                                           pamonce = 6))
       
       # out.DCBM[[k.cand]] <- as.integer(kmeans(rn.eig, work.K,
       #                                         nstart = 100,
@@ -324,7 +324,6 @@ croissant.blockmodel <- function(A, K.CAND,
   K.size <- length(K.CAND)
   
   est.out <- mclapply(1:(K.size*nrow(raw.ind)), function(ii){
-    
     k.cand <- ii %% K.size
     k.cand <- ifelse(k.cand == 0, K.size, k.cand)
     
@@ -342,7 +341,6 @@ croissant.blockmodel <- function(A, K.CAND,
     
     out.SBM <- raw.out[raw.ind[,1] == r][[q]]$SBM[[k.cand]]
     out.DCBM <- raw.out[raw.ind[,1] == r][[q]]$DCBM[[k.cand]]
-    
     
     work.K <- K.CAND[[k.cand]]
     
@@ -411,13 +409,13 @@ croissant.blockmodel <- function(A, K.CAND,
     
     message(paste0("Est. at s=",q, " finished"))
     
+    
     return(list('gSBM' = mat.SBM,
                 'BSBM' = B.SBM,
                 'gDCBM' = mat.DCBM,
                 'BDCBM' = B.DCBM,
                 'psiDCBM' = psi.DCBM))
-  },
-  mc.cores = ncore)
+  }, mc.cores = ncore)
   
   g.SBM <- list()
   B.SBM <- list()
@@ -1372,7 +1370,153 @@ ECV.undirected.Rank <- function(A,max.K,B=3,holdout.p=0.1,soft=FALSE,fast=fast){
   ))
 }
 
+###
+###############################################################################
+nn <- 10000
+KK <- 5
 
+p.inter <- 0.1
+p.intra <- 0.5
+
+psps <- rbeta(nn, 1, 4)
+#psps <- rep(1, nn)
+
+KKCAND <- 10
+
+BB <- diag(p.intra-p.inter, KK, KK) + matrix(p.inter, KK, KK)
+
+
+setwd('~/croissant/dcbm')
+if(!dir.exists("out_dcbm"))
+  dir.create("out_dcbm")
+
+write_csv(data.table(`simulation` = 0, `model` = "", n = 0, K = 0,
+                     `cand.K` = 0, B = "",
+                     psi = "", `sbm.fit.method` = "",
+                     `dc.fit.method` = "",
+                     `avg.deg` = 0,
+                     s = 0, o = 0, R = 0,
+                     `time` = 0,
+                     `best.l2` = "",
+                     `best.bd` = "",
+                     `best.auc` = "",
+                     `buffer` = "",
+                     `l2.only.sbm` = "",
+                     `l2.only.dcbm` = "",
+                     `l2.both` = "",
+                     `bd.only.sbm` = "",
+                     `bd.only.dcbm` = "",
+                     `bd.both` = "",
+                     `auc.only.sbm` = "",
+                     `auc.only.dcbm` = "",
+                     `auc.both` = ""), 
+          "out_dcbm/croissant_dcbm_trial.csv", append = F)
+
+
+sonpar <- list(c(5, 2000, 1),
+               c(5, 3000, 1),
+               c(10, 3000, 1),
+               c(5, 2000, 3),
+               c(5, 3000, 3),
+               c(10, 3000, 3),
+               c(5, 2000, 5),
+               c(5, 3000, 5),
+               c(10, 3000, 5))
+
+for(i in 1:10){
+  system.time(net <- 
+                blockmodel.gen.fast(n = nn, K = KK, B = BB,
+                                    psi = psps, ncore = 20))
+  
+  for(par in seq_along(sonpar)){
+    ss <- sonpar[[par]][1]
+    oo <- sonpar[[par]][2]
+    RR <- sonpar[[par]][3]
+    
+    message("Simulation - ", i, ":\t croissant running for ", ss, "-", oo, "-", RR)
+    
+    time.sonn <- system.time(out.sonn <- 
+                               croissant.blockmodel(A = net$A, K.CAND = KKCAND, 
+                                                    s = ss, o = oo, R = RR,
+                                                    tau = 0,
+                                                    laplace = F,
+                                                    dc.est = 1,
+                                                    loss = c("l2", "bin.dev", "AUC"),
+                                                    ncore = 6)
+    )[3]
+    
+    time.ecv <- system.time(out.ecv <- ECV.for.blockmodel(net$A, 10, B = 3))
+    
+    
+    l2.only <- as.matrix(out.sonn$loss %>% select(starts_with("l2")))
+    
+    l2.out <- apply(apply(l2.only, 2, function(xx){
+      ll <- length(xx)
+      
+      c(`sbm` = which.min(xx[seq(from = 1, to = ll, by = 2)]),
+        `dcbm` = which.min(xx[seq(from = 2, to = ll, by = 2)]))
+    }), 1, modal)
+    
+    bd.only <- as.matrix(out.sonn$loss %>% select(starts_with("bin.dev")))
+    
+    bd.out <- apply(apply(bd.only, 2, function(xx){
+      ll <- length(xx)
+      
+      c(`sbm` = which.min(xx[seq(from = 1, to = ll, by = 2)]),
+        `dcbm` = which.min(xx[seq(from = 2, to = ll, by = 2)]))
+    }), 1, modal)
+    
+    auc.only <- as.matrix(out.sonn$loss %>% select(starts_with("AUC")))
+    
+    auc.out <- apply(apply(auc.only, 2, function(xx){
+      ll <- length(xx)
+      
+      c(`sbm` = which.min(xx[seq(from = 1, to = ll, by = 2)]),
+        `dcbm` = which.min(xx[seq(from = 2, to = ll, by = 2)]))
+    }), 1, modal)
+    
+    
+    
+    write_csv(data.table(`simulation` = i, `model` = "DCBM", n = nn, K = KK,
+                         `cand.K` = KKCAND, B = paste0(p.intra, "-", p.inter),
+                         psi = "20-100", `sbm.fit.method` = "pam+nc+tau0.3",
+                         `dc.fit.method` = "km+ns100+rn+CL+tau0.3",
+                         `avg.deg` = mean(rowSums(net$A)),
+                         s = ss, o = oo, R = RR,
+                         `time` = time.sonn,
+                         `best.l2` = out.sonn$l2.model,
+                         `best.bd` = out.sonn$bin.dev.model,
+                         `best.auc` = out.sonn$AUC.model,
+                         `buffer` = "",
+                         `l2.only.sbm` = l2.out['sbm'],
+                         `l2.only.dcbm` = l2.out['dcbm'],
+                         `l2.both` = paste0(out.sonn$`Mod.K.hat.each.rep (l2)`, collapse = " "),
+                         `bd.only.sbm` = bd.out['sbm'],
+                         `bd.only.dcbm` = bd.out['dcbm'],
+                         `bd.both` = paste0(out.sonn$`Mod.K.hat.each.rep (bin.dev)`, collapse = " "),
+                         `auc.only.sbm` = auc.out['sbm'],
+                         `auc.only.dcbm` = auc.out['dcbm'],
+                         `auc.both` = paste0(out.sonn$`Mod.K.hat.each.rep (AUC)`, collapse = " ")
+    ), "out_dcbm/croissant_dcbm_trial.csv", append = T)
+    
+    write_csv(data.table(simulation = i, model = "SBM",n = nn, K = KK,
+                         `cand.K` = KKCAND, B = paste0(p.intra, "-", p.inter),
+                         psi = 1, `sbm.fit.method` = "pam+nc",
+                         `dc.fit.method` = "km+ns100+rn+CL",
+                         `avg.deg` = mean(rowSums(net$A)),
+                         s = ss, o = oo, R = RR,
+                         out.sonn$loss),
+              "tmp_dcbm/croissant_dcbm_loss_trial.csv", append = T)
+    
+    
+    gc() 
+  }
+}
+
+
+#####
+##################
+#####
 
 
 

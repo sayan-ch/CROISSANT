@@ -1,0 +1,2 @@
+simulation,model,n,K,cand.K,B,psi,sbm.fit.method,dc.fit.method,avg.deg,s,o,R,time,best.l2,best.bd,best.auc,buffer,l2.only.sbm,l2.only.dcbm,l2.both,bd.only.sbm,bd.only.dcbm,bd.both,auc.only.sbm,auc.only.dcbm,auc.both
+0,,0,0,0,,,,,0,0,0,0,0,,,,,,,,,,,,,
