@@ -499,14 +499,14 @@ croissant.blockmodel <- function(A, K.CAND,
         for(lq in seq_along(loss)){
           tmp.nm <- paste(mod[mq], loss[lq], sep = "_")
           L.temp[tmp.nm, 1] <-  L.temp[tmp.nm, 1] +
-            do.call(loss[lq], list(A.non, P.SBM))/(s*(s-1)*0.5) 
+            do.call(loss[lq], list(as.numeric(A.non), P.SBM))/(s*(s-1)*0.5) 
         }
         next}
       else{
         for(lq in seq_along(loss)){
           tmp.nm <- paste(mod[mq], loss[lq], sep = "_")
           L.temp[tmp.nm, 1] <-  L.temp[tmp.nm, 1] +
-            do.call(loss[lq], list(A.non, P.DCBM))/(s*(s-1)*0.5)
+            do.call(loss[lq], list(as.numeric(A.non), P.DCBM))/(s*(s-1)*0.5)
         }
       }
     }
