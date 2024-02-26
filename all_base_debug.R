@@ -1112,10 +1112,10 @@ cv.evaluate.all <- function(A,train.index,holdout.index,K,dc.est=1){
 sparse.RDPG.gen <- function(n, d, sparsity.multiplier = 1, ncore = 1){
   X <- matrix(runif(n*d), nrow = n, ncol = d)
   
-  X.norm <- X/sqrt(rowSums(X^2))
+  # X.norm <- X/sqrt(rowSums(X^2))
   
-  P <- tcrossprod(X.norm)
-  P <- P*sparsity.multiplier
+  P <- tcrossprod(X)
+  P <- P*sparsity.multiplier/max(P)
   diag(P) <- 0
   
   stor <- do.call('rbind',
@@ -1372,61 +1372,51 @@ ECV.undirected.Rank <- function(A,max.K,B=3,holdout.p=0.1,soft=FALSE,fast=fast){
 
 ###
 ###############################################################################
-nn <- 10000
-KK <- 5
+nn <- 20000
+dd <- 10
 
-p.inter <- 0.1
-p.intra <- 0.5
+spsp <- 1
 
-psps <- rbeta(nn, 1, 4)
-#psps <- rep(1, nn)
-
-KKCAND <- 10
-
-BB <- diag(p.intra-p.inter, KK, KK) + matrix(p.inter, KK, KK)
+DDCAND <- 20
 
 
-setwd('~/croissant/dcbm')
-if(!dir.exists("out_dcbm"))
-  dir.create("out_dcbm")
+setwd('~/croissant/rdpg')
+if(!dir.exists("out_rdpg"))
+  dir.create("out_rdpg")
 
-write_csv(data.table(`simulation` = 0, `model` = "", n = 0, K = 0,
-                     `cand.K` = 0, B = "",
-                     psi = "", `sbm.fit.method` = "",
-                     `dc.fit.method` = "",
+write_csv(data.table(`simulation` = 0, n = 0, d = 0,
+                     `sparsity` = 0,
+                     `cand.d` = 0,
                      `avg.deg` = 0,
                      s = 0, o = 0, R = 0,
                      `time` = 0,
                      `best.l2` = "",
                      `best.bd` = "",
-                     `best.auc` = "",
-                     `buffer` = "",
-                     `l2.only.sbm` = "",
-                     `l2.only.dcbm` = "",
-                     `l2.both` = "",
-                     `bd.only.sbm` = "",
-                     `bd.only.dcbm` = "",
-                     `bd.both` = "",
-                     `auc.only.sbm` = "",
-                     `auc.only.dcbm` = "",
-                     `auc.both` = ""), 
-          "out_dcbm/croissant_dcbm_trial.csv", append = F)
+                     `best.auc` = ""
+                     ), 
+          "out_rdpg/croissant_rdpg_trial.csv", append = F)
 
 
-sonpar <- list(c(5, 2000, 1),
-               c(5, 3000, 1),
-               c(10, 3000, 1),
-               c(5, 2000, 3),
-               c(5, 3000, 3),
-               c(10, 3000, 3),
-               c(5, 2000, 5),
-               c(5, 3000, 5),
-               c(10, 3000, 5))
+sonpar <- list(c(5, 500, 1),
+               c(5, 1000, 1),
+               c(5, 2000, 1),
+               c(5, 500, 5),
+               c(5, 1000, 5),
+               c(5, 2000, 5))
+
+time.sonn <- list()
+out.sonn <- list()
 
 for(i in 1:10){
-  system.time(net <- 
-                blockmodel.gen.fast(n = nn, K = KK, B = BB,
-                                    psi = psps, ncore = 20))
+  message("rdpg-", i," gen time: ",
+          system.time(net <- 
+                sparse.RDPG.gen(n = nn, d = dd,
+                                sparsity.multiplier = spsp,
+                                ncore = 20)
+                )[3])
+  
+  time.sonn[[i]] <- vector()
+  out.sonn[[i]] <- list()
   
   for(par in seq_along(sonpar)){
     ss <- sonpar[[par]][1]
@@ -1435,47 +1425,19 @@ for(i in 1:10){
     
     message("Simulation - ", i, ":\t croissant running for ", ss, "-", oo, "-", RR)
     
-    time.sonn <- system.time(out.sonn <- 
-                               croissant.blockmodel(A = net$A, K.CAND = KKCAND, 
-                                                    s = ss, o = oo, R = RR,
-                                                    tau = 0,
-                                                    laplace = F,
-                                                    dc.est = 1,
-                                                    loss = c("l2", "bin.dev", "AUC"),
-                                                    ncore = 6)
+    time.sonn[[i]][par] <- system.time(out.sonn[[i]][[par]] <- 
+                               croissant.rdpg(A = net$A, d.cand = 20,
+                                              s = 5, o = 5000, R = 1,
+                                              laplace = F, 
+                                              loss = c("l2", "bin.dev", "AUC"),
+                                              ncore = 6)
     )[3]
     
-    time.ecv <- system.time(out.ecv <- ECV.for.blockmodel(net$A, 10, B = 3))
+    time.ecv <- system.time(out.ecv <- 
+                              ECV.undirected.Rank(net$A, 5, 3))[3]
     
-    
-    l2.only <- as.matrix(out.sonn$loss %>% select(starts_with("l2")))
-    
-    l2.out <- apply(apply(l2.only, 2, function(xx){
-      ll <- length(xx)
-      
-      c(`sbm` = which.min(xx[seq(from = 1, to = ll, by = 2)]),
-        `dcbm` = which.min(xx[seq(from = 2, to = ll, by = 2)]))
-    }), 1, modal)
-    
-    bd.only <- as.matrix(out.sonn$loss %>% select(starts_with("bin.dev")))
-    
-    bd.out <- apply(apply(bd.only, 2, function(xx){
-      ll <- length(xx)
-      
-      c(`sbm` = which.min(xx[seq(from = 1, to = ll, by = 2)]),
-        `dcbm` = which.min(xx[seq(from = 2, to = ll, by = 2)]))
-    }), 1, modal)
-    
-    auc.only <- as.matrix(out.sonn$loss %>% select(starts_with("AUC")))
-    
-    auc.out <- apply(apply(auc.only, 2, function(xx){
-      ll <- length(xx)
-      
-      c(`sbm` = which.min(xx[seq(from = 1, to = ll, by = 2)]),
-        `dcbm` = which.min(xx[seq(from = 2, to = ll, by = 2)]))
-    }), 1, modal)
-    
-    
+    time <- system.time(out <- croissant.rdpg(
+      A = net$A, d.cand = 5, s = 3, o = 1700, R = 1, ncore = 6))[3]
     
     write_csv(data.table(`simulation` = i, `model` = "DCBM", n = nn, K = KK,
                          `cand.K` = KKCAND, B = paste0(p.intra, "-", p.inter),

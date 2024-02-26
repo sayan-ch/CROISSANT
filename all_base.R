@@ -1115,10 +1115,10 @@ cv.evaluate.all <- function(A,train.index,holdout.index,K,dc.est=1){
 sparse.RDPG.gen <- function(n, d, sparsity.multiplier = 1, ncore = 1){
   X <- matrix(runif(n*d), nrow = n, ncol = d)
   
-  X.norm <- X/sqrt(rowSums(X^2))
+  # X.norm <- X/sqrt(rowSums(X^2))
   
-  P <- tcrossprod(X.norm)
-  P <- P*sparsity.multiplier
+  P <- tcrossprod(X)
+  P <- P*sparsity.multiplier/max(P)
   diag(P) <- 0
   
   stor <- do.call('rbind',
