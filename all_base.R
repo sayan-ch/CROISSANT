@@ -73,11 +73,11 @@ best.perm.label.match <- function(lab, fixed,
   
   E <- matrix(0, K, K)
   
-  # C.lab <- as(sparseMatrix(i = 1:n, j = lab, dims = c(n, K)), 'dMatrix')
-  # C.fixed <- as(sparseMatrix(i = 1:n, j = fixed, dims = c(n, K)), 'dMatrix')
-  # M <- crossprod(C.lab, C.fixed)
+  C.lab <- as(sparseMatrix(i = 1:n, j = lab, dims = c(n, K)), 'dMatrix')
+  C.fixed <- as(sparseMatrix(i = 1:n, j = fixed, dims = c(n, K)), 'dMatrix')
+  M <- crossprod(C.lab, C.fixed)
   
-  M <- Rfast::Table(lab, fixed)
+  # M <- Rfast::Table(lab, fixed)
   while(max(M) != -1)
   {
     ind <- which(M == max(M), T)[1,]
@@ -87,6 +87,12 @@ best.perm.label.match <- function(lab, fixed,
   }
   return(E)
 }
+
+
+microbenchmark::microbenchmark(
+  ef = {best.perm.label.match(lab, fixed)},
+  es = {best.perm.label.match.slow(lab, fixed)}
+)
 
 
 matched.lab <- function(lab, fixed, 
@@ -232,7 +238,9 @@ AUC <- function(A, P){
 ################################################################################
 
 croissant.blockmodel <- function(A, K.CAND,
-                           s, o, R, tau = 1, laplace = F,
+                           s, o, R, 
+                           tau = 0,
+                           laplace = F,
                            dc.est = 2,
                            loss = c("l2", "bin.dev", "AUC"),
                            ncore = 1){
@@ -269,15 +277,17 @@ croissant.blockmodel <- function(A, K.CAND,
     d.sonn.tau <- sparseMatrix( i = 1:(o+m), j = 1:(o+m),
                                 x = 1/sqrt(deg + tau*avg.deg))
     
-    if(!laplace){
-      L.sonn <- A.sonn.tau
-    }else{
+    
+    L.sonn <- A.sonn.tau
+    if(laplace){
       L.sonn <- tcrossprod(crossprod(d.sonn.tau, A.sonn.tau), d.sonn.tau)
       L.sonn[is.na(L.sonn)] <- 0
-    }
+      }
+    
     
     #eig.max <- eigs_sym(L.sonn, K.max, "LM")$vectors
-    eig.max <- irlba(L.sonn, nu = K.max, nv = K.max)$v
+    eig.max <- irlba::partial_eigen(x = L.sonn, n = K.max, 
+                                    symmetric = T)$vectors
     
     out.SBM <- list()
     out.DCBM <- list()
@@ -296,16 +306,19 @@ croissant.blockmodel <- function(A, K.CAND,
       #                                        iter.max = 10000)$cluster)
       out.SBM[[k.cand]] <- as.integer(pam(eig.max[,1:work.K], work.K,
                                           metric = "euclidean",
+                                          do.swap = F,
                                           cluster.only = T,
                                           pamonce = 6))
       
       #psi.hat[[k.cand]] <- sqrt(rowSums(eig.max[,1:work.K]^2))
       rownorm <- sqrt(rowSums(eig.max[, 1:work.K]^2))
+      rownorm[rownorm == 0] <- 1
       
       rn.eig <- eig.max[,1:work.K]/rownorm
       
       out.DCBM[[k.cand]] <- as.integer(pam(rn.eig, work.K,
-                                          metric = "manhattan",
+                                          metric = "euclidean",
+                                          do.swap = F,
                                           cluster.only = T,
                                           pamonce = 6))
       
@@ -1372,6 +1385,7 @@ ECV.undirected.Rank <- function(A,max.K,B=3,holdout.p=0.1,soft=FALSE,fast=fast){
               rank.auc=which.min(auc.seq),auc=auc.seq
   ))
 }
+
 
 
 
