@@ -98,7 +98,7 @@ microbenchmark::microbenchmark(
 matched.lab <- function(lab, fixed, 
                         n = length(lab), K = max(lab, fixed)){
   
-  E <- best.perm.label.match(lab, fixed, K)
+  E <- best.perm.label.match(lab, fixed, n = n, K = K)
   
   lmat <- sparseMatrix(i = 1:n, j = lab, dims = c(n,K))
   
