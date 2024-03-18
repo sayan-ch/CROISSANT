@@ -232,7 +232,7 @@ croissant.latent <- function(A, d.cand, s, o, R,
 }
 
 #####
-net <- latent.gen(100, 2, 0, 1, 6)
+net <- latent.gen(500, 3, 0, 1, 6)
 
 netnet <- as.network(net$A, matrix.type = "adjacency")
 
@@ -245,7 +245,7 @@ beta <- try$mcmc.mle$beta
 plot(try)
 
 time1 <- system.time(out1 <- croissant.latent(A = net$A, d.cand = 5, 
-                                     s = 3, o = 25, R = 6,
+                                     s = 4, o = 100, R = 1,
                                      loss = c("l2", "bin.dev", "AUC"),
                                      ncore = 6))
 

@@ -246,13 +246,11 @@ croissant.tune.regsp <- function(A, K, tau.cand,
     P.BM[P.BM < 1e-6] <- 1e-6
     P.BM[P.BM > 1- 1e-6] <- 1 - 1e-6
     
-    for(mq in seq_along(mod)){
         for(lq in seq_along(loss)){
           tmp.nm <- loss[lq]
           L.temp[tmp.nm, 1] <-  L.temp[tmp.nm, 1] +
             do.call(loss[lq], list(as.numeric(A.non), P.BM))/(s*(s-1)*0.5)
         }
-    }
   
     return(L.temp)},
     mc.cores = ncore)
@@ -295,20 +293,28 @@ croissant.tune.regsp <- function(A, K, tau.cand,
            obj2))
 }
 
-
-net <- blockmodel.gen.fast(10000, 5, diag(.2, 5, 5) + matrix(.1, 5, 5),
-                           psi = rbeta(10000, 1, 4),
+library(poweRlaw)
+net <- blockmodel.gen.fast(3000, 5, diag(.2, 5, 5) + matrix(.04, 5, 5),
+                           psi = rplcon(3000, 1, 5),
                            ncore = 6)
 
-system.time(out <- croissant.tune.regsp(net$A, K = 5,
-                                        tau.cand = seq(0, 2, by = 0.25), DCBM = T,
-                                        s = 2, o = 8000, R = 6, ncore = 6))
+mean(rowSums(net$A))
+
+system.time(out <- croissant.tune.regsp(A = net$A, K = 5,
+                                        tau.cand = seq(0, 2, by = 0.1), DCBM = T,
+                                        laplace = T,
+                                        s = 2, o = 2400, R = 6, ncore = 6))
+
+library(randnet)
 
 cls <- err <- list()
 
 ii <- 1
+laplace <- T
 
-for(tau in c(seq(0, 2, by = 0.25), 0.29, 0.33)){
+n = 3000
+
+for(tau in c(seq(0, 2, by = 0.1), out$l2.model, out$bin.dev.model, out$AUC.model)){
   print(tau)
   
   deg <- rowSums(net$A)
@@ -316,15 +322,27 @@ for(tau in c(seq(0, 2, by = 0.25), 0.29, 0.33)){
   
   A.tau <- net$A + tau * avg.deg / n
   
-  eig <- irlba::partial_eigen(A.tau, n = 5, symmetric = T)$vectors
+  L.tau <- A.tau
+  
+  if(laplace){
+  d.tau <- sparseMatrix( i = 1:n, j = 1:n,
+                              x = 1/sqrt(deg + tau*avg.deg))
+  
+    L.tau <- tcrossprod(crossprod(d.tau, A.tau), d.tau)
+    L.tau[is.na(L.tau)] <- 0
+  }
+  
+  eig <- irlba::partial_eigen(L.tau, n = 5, symmetric = T)$vectors
   rowsum <- sqrt(rowSums(eig ^ 2))
   
   rowsum[rowsum == 0] <- 1
   
   eig.rn <- eig / rowsum
   
-  cls[[ii]] <- as.integer(kmeans(eig.rn, 5, iter.max = 10 ^ 7,
-                      nstart = 100)$cluster)
+  cls[[ii]] <- as.integer(pam(x = eig.rn, k = 5,
+                              pamonce = 6,
+                              do.swap = F,
+                              cluster.only = T))
   
   err[[ii]] <-
     100 * mean(net$member != matched.lab(cls[[ii]], net$member))
@@ -332,9 +350,13 @@ for(tau in c(seq(0, 2, by = 0.25), 0.29, 0.33)){
   ii <- ii + 1
 }
 
-btt <- c(seq(0, 2, by = 0.25), 1.29, 0.33)
+btt <- c(seq(0, 2, by = 0.1), out$l2.model, out$bin.dev.model, out$AUC.model)
 
-plot(btt, do.call('c', err), type = "o")
+plot(btt, do.call('c', err))
+
+error <- do.call('c', err); error
+btt[which.min(error)]
+
 
 
 
