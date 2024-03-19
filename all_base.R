@@ -89,10 +89,6 @@ best.perm.label.match <- function(lab, fixed,
 }
 
 
-microbenchmark::microbenchmark(
-  ef = {best.perm.label.match(lab, fixed)},
-  es = {best.perm.label.match.slow(lab, fixed)}
-)
 
 
 matched.lab <- function(lab, fixed, 
