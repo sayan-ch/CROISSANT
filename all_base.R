@@ -11,6 +11,7 @@ library(Matrix)
 library(pROC)
 library(IMIFA)
 library(rlist)
+library(latentnet)
 
 ## CROISSANT
 
@@ -1383,7 +1384,479 @@ ECV.undirected.Rank <- function(A,max.K,B=3,holdout.p=0.1,soft=FALSE,fast=fast){
 }
 
 
+## Latent space
+latent.gen <- function(n, d, alpha = 1, sparsity = 1, ncore = 1){
+  Z <- matrix(runif(n*d), nrow = n, ncol = d)
+  
+  stor <- do.call('rbind',
+                  mclapply(1:(n-1), function(i) {
+                    
+                    logodds <- alpha - sapply((i+1):n, 
+                                              \(jj) sqrt(sum((Z[i, ] -Z[jj, ])^2))
+                    )
+                    
+                    pp <- sparsity*exp(logodds)/(1+exp(logodds))
+                    
+                    tmp <- which(rbinom(n-i, 1, pp) == 1)
+                    
+                    if(length(tmp) == 0)
+                      return(NULL)
+                    else
+                      return(cbind(rep(i, length(tmp)), i + tmp))
+                  }, mc.cores = ncore))
+  
+  A <- as(sparseMatrix(i = stor[,1], j = stor[,2], dims = c(n,n), symmetric = T),
+          'dMatrix')
+  
+  return(list('A' = A, 'Z' = Z))
+}
 
+
+## Croissant for latent space
+croissant.latent <- function(A, d.cand, s, o, R,
+                             loss = c("l2", "bin.dev", "AUC"),
+                             ncore = 1){
+  n <- nrow(A)
+  m <- (n-o)/s
+  
+  if(length(d.cand) == 1) d.cand <- 1:d.cand
+  
+  dmax <- max(d.cand)
+  
+  over <- lapply(1:R, function(ii) sample.int(n, o, F))
+  non.over <- lapply(1:R, function(ii) sample((1:n)[-over[[ii]]], n-o, 
+                                              replace = F))
+  
+  # raw.ind <- cbind(rep(1:R, each = s), rep(1:s, R))
+  # colnames(raw.ind) <- c('r', 's')
+  
+  ld <- length(d.cand)
+  raw.ind <- matrix(nrow = R*s*ld, ncol = 3)
+  cc <- 1
+  for(r in 1:R)
+    for(dd in seq_along(d.cand))
+      for(q in 1:s){
+        raw.ind[cc, ] <- c(r, dd, q)
+        cc <- cc + 1
+      }
+  colnames(raw.ind) <- c('r', 'dd', 'q')
+  
+  system.time(raw.out <- mclapply(1:nrow(raw.ind), function(ii){
+    
+    q <- raw.ind[ii, 'q']
+    r <- raw.ind[ii, 'r']
+    dd <- raw.ind[ii, 'dd']
+    
+    sonn <- c(over[[r]], non.over[[r]][((q-1)*m+1):(q*m)])
+    A.sonn <- A[sonn, sonn]
+    net.sonn <- as.network(A.sonn, matrix.type = "adjacency")
+    
+    out.lat <- ergmm(net.sonn ~ euclidean(d = d.cand[dd]), tofit = "mle")
+    Z.sonn <- out.lat$mle$Z
+    beta.sonn <- out.lat$mle$beta
+    
+    return(list(Z.hat = Z.sonn, beta.hat = beta.sonn))
+    
+  },mc.cores = ncore))
+  
+  match.out <- mclapply(1:nrow(raw.ind), function(ii){
+    
+    r <- raw.ind[ii, 'r']
+    q <- raw.ind[ii, 'q']
+    dd <- raw.ind[ii, 'dd']
+    #dd <- match.ind[ii, 'dd']
+    
+    #iip <- which(raw.ind[,'r'] == r & raw.ind[,'s'] == q)
+    
+    if(q == 1) return(list('Z.rot' = raw.out[[ii]]$Z.hat[-(1:o),],
+                           'beta.hat' = raw.out[[ii]]$beta.hat))
+    
+    stand <- which(raw.ind[,'r'] == r & raw.ind[,'q'] == 1 & 
+                     raw.ind[,'dd'] == dd)
+    
+    proc.par <- Procrustes(cbind(raw.out[[ii]]$Z.hat[(1:o), ]),
+                           cbind(raw.out[[stand]]$Z.hat[(1:o), ]),
+                           translate = T,
+                           dilate = F)
+    
+    Z.rot <- cbind(raw.out[[ii]]$Z.hat[-(1:o),]) %*% proc.par$R +
+      matrix(proc.par$t, nrow = m, ncol = d.cand[dd])
+    
+    return(list('Z.rot' = Z.rot, 'beta.hat' = raw.out[[ii]]$beta.hat))
+    
+  }, mc.cores = ncore)
+  
+  non.size <- s*(s-1)/2
+  ld <- length(d.cand)
+  non.mat <- matrix(nrow = R*non.size*ld, ncol = 4)
+  cc <- 1
+  for(r in 1:R)
+    for(dd in seq_along(d.cand))
+      for(p in 1:(s-1))
+        for(q in (p+1):s){
+          non.mat[cc, ] <- c(r, dd, p, q)
+          cc <- cc + 1
+        }
+  colnames(non.mat) <- c('r', 'dd', 'p', 'q')
+  
+  L.all <- mclapply(1:nrow(non.mat), function(ii){
+    r <- non.mat[ii, 'r']
+    dd <- non.mat[ii, 'dd']
+    p <- non.mat[ii, 'p']
+    q <- non.mat[ii, 'q']
+    
+    p.non <- non.over[[r]][((p-1)*m+1):(p*m)]
+    q.non <- non.over[[r]][((q-1)*m+1):(q*m)]
+    
+    A.non <- A[p.non, q.non]
+    
+    L.temp <- matrix(0, nrow = length(loss), ncol = 1)
+    row.names(L.temp) <- loss
+    colnames(L.temp) <- as.character(d.cand[dd])
+    
+    ind1 <- which(raw.ind[, 'r'] == r & raw.ind[, 'q'] == p &
+                    raw.ind[,'dd'] == dd)
+    ind2 <- which(raw.ind[, 'r'] == r & raw.ind[, 'q'] == q &
+                    raw.ind[,'dd'] == d.cand[dd])
+    
+    # P.hat <- tcrossprod(match.out[[ind1]][,1:d.cand[dd]],
+    #                     match.out[[ind2]][,1:d.cand[dd]])
+    
+    Z1.hat <- match.out[[ind1]]$Z.rot
+    Z2.hat <- match.out[[ind2]]$Z.rot
+    beta.hat <- (match.out[[ind1]]$beta.hat + match.out[[ind2]]$beta.hat)/2
+    
+    log.hat <- beta.hat - cdist(Z1.hat, Z2.hat)
+    
+    P.hat <- exp(log.hat)/(1+exp(log.hat))
+    
+    message(sum(P.hat < 0 | P.hat > 1))
+    
+    # P.hat[P.hat < 1e-6] <- 1e-6
+    # P.hat[P.hat > 1- 1e-6] <- 1 - 1e-6
+    
+    for(lq in seq_along(loss)){
+      tmp.nm <- loss[lq]
+      L.temp[tmp.nm, 1] <-  L.temp[tmp.nm, 1] +
+        (do.call(loss[lq], list(A.non, P.hat)))/(s*(s-1)*0.5)
+    }
+    
+    return(L.temp)},
+    mc.cores = ncore)
+  
+  L <- list()
+  
+  for(r in 1:R){
+    L[[r]] <- do.call('cbind', lapply(1:ld, function(dd){
+      Reduce('+', L.all[which(non.mat[,'dd'] == dd & non.mat[,'r'] == r)])
+    }))
+    
+    row.names(L[[r]]) <- loss
+    colnames(L[[r]]) <- as.character(d.cand)
+  }
+  
+  obj <- data.table(`Candidate Rank` = d.cand)
+  
+  for(lq in seq_along(loss))
+    for(r in 1:R){
+      obj[[paste0(loss[lq], "-Rep=", r)]] <- 
+        as(rbind(L[[r]][loss[lq], ]), "vector")
+    }
+  
+  obj2 <- list()
+  
+  obj2[["Candidate Rank"]] <- d.cand
+  
+  for(lq in seq_along(loss)){
+    
+    obj2[[paste0("d.hat.each.rep (", loss[lq], ")")]] <- sapply(1:R, function(r){
+      l.rdpg <- d.cand[which.min(L[[r]][loss[lq],])]
+    })
+    
+    
+    obj2[[paste0(loss[lq], ".model")]] <- 
+      modal(obj2[[paste0("d.hat.each.rep (", loss[lq], ")")]])
+  }
+  
+  return(c(list('loss' = obj), 
+           obj2))
+  
+}
+
+## Param tune reg SP
+croissant.tune.regsp <- function(A, K, tau.cand,
+                                 DCBM = F,
+                                 s, o, R,
+                                 laplace = F,
+                                 dc.est = 2,
+                                 loss = c("l2", "bin.dev", "AUC"),
+                                 ncore = 1){
+  n <- nrow(A)
+  m <- (n-o)/s
+  
+  L <- list()
+  
+  over <- lapply(1:R, function(ii) sample.int(n, o, F))
+  non.over <- lapply(1:R, function(ii) sample((1:n)[-over[[ii]]], n-o, replace = F))
+  
+  raw.ind <- cbind(rep(1:R, each = s), rep(1:s, R))
+  
+  raw.out <- mclapply(1:nrow(raw.ind), function(ii){
+    
+    q <- raw.ind[ii, 2]
+    r <- raw.ind[ii, 1]
+    
+    sonn <- c(over[[r]], non.over[[r]][((q-1)*m+1):(q*m)])
+    A.sonn <- A[sonn, sonn]
+    
+    deg <- rowSums(A.sonn)
+    avg.deg <- mean(deg)
+    
+    out.BM <- list()
+    
+    for(tt in seq_along(tau.cand)){
+      A.sonn.tau <- A.sonn + tau.cand[tt]*avg.deg/n
+      
+      d.sonn.tau <- sparseMatrix( i = 1:(o+m), j = 1:(o+m),
+                                  x = 1/sqrt(deg + tau.cand[tt]*avg.deg))
+      
+      L.sonn <- A.sonn.tau
+      
+      if(laplace){
+        L.sonn <- tcrossprod(crossprod(d.sonn.tau, A.sonn.tau), d.sonn.tau)
+        L.sonn[is.na(L.sonn)] <- 0
+      }
+      
+      eig.max <- irlba::partial_eigen(x = L.sonn, n = K, 
+                                      symmetric = T)$vectors
+      
+      if(K == 1){
+        out.BM[[tt]] <- rep(1, o+m)
+        next
+      }
+      
+      rn.eig <- eig.max
+      
+      if(DCBM){
+        rownorm <- sqrt(rowSums(eig.max^2))
+        rownorm[rownorm == 0] <- 1
+        
+        rn.eig <- eig.max/rownorm
+      }
+      
+      out.BM[[tt]] <- as.integer(pam(rn.eig, K,
+                                     metric = "euclidean",
+                                     do.swap = F, cluster.only = T,
+                                     pamonce = 6))
+    }
+    
+    return(list('BM' = out.BM))
+    # 'psi' = psi.hat))
+  },
+  mc.cores = ncore)
+  
+  tau.size <- length(tau.cand)
+  
+  est.out <- mclapply(1:(tau.size*nrow(raw.ind)), function(ii){
+    
+    tt <- ii %% tau.size
+    tt <- ifelse(tt == 0, tau.size, tt)
+    
+    rot <- ceiling(ii / tau.size)
+    
+    q <- raw.ind[rot, 2]
+    r <- raw.ind[rot, 1]
+    
+    #message(paste0("Est. at s=",q, " started"))
+    sonn <- c(over[[r]], non.over[[r]][((q-1)*m+1):(q*m)])
+    A.sonn <- A[sonn, sonn]
+    
+    out.BM.std <- raw.out[raw.ind[,1] == r][[1]]$BM[[tt]]
+    
+    out.BM <- raw.out[raw.ind[,1] == r][[q]]$BM[[tt]]
+    
+    work.tau <- tau.cand[tt]
+    
+    if(K == 1){
+      mat.BM <- rep(1, m)
+      
+      if(!DCBM){
+        B.BM <- fast.SBM.est(A.sonn, rep(1,o+m), o+m, 1)
+        mat.BM <- rep(1, m)
+        psi.BM <- rep(1, m)
+        
+        return(list('gBM' = mat.BM, 'BBM' = B.BM,
+                    'psiBM' = psi.BM))
+      }
+      
+      if(DCBM){
+        if(dc.est == 2){
+          tmp <- fast.DCBM.est(A.sonn, rep(1,o+m), o+m, 1, o,
+                               p.sample = 1)
+        }else{
+          #psi.hat <- raw.out[raw.ind[,1] == r][[q]]$psi[[k.cand]]
+          tmp <- eigen.DCBM.est(A.sonn, rep(1,o+m), o+m, 1, o,
+                                p.sample = 1)
+        }
+      }
+      
+      B.BM <- tmp$Bsum
+      psi.BM <- tmp$psi
+      mat.BM <- rep(1, m)
+      
+      return(list('gBM' = mat.BM,
+                  'BBM' = B.BM,
+                  'psiBM' = psi.BM))
+    }
+    
+    E.BM.kc <- best.perm.label.match(out.BM[1:o], 
+                                     out.BM.std[1:o],
+                                     o, K)
+    
+    tmp.BM <- sparseMatrix(i = 1:(o+m), j = out.BM, 
+                           dims = c((o+m), K))
+    
+    mat.BM <- as.vector(tcrossprod(tcrossprod(tmp.BM, E.BM.kc),
+                                   rbind(1:K)))
+    if(!DCBM){
+      B.BM <- fast.SBM.est(A.sonn, mat.BM, o+m, K)
+      mat.BM <- mat.BM[-(1:o)]
+      psi.BM <- rep(1, m)
+      
+      return(list('gBM' = mat.BM, 'BBM' = B.BM,
+                  'psiBM' = psi.BM))
+    }
+    
+    if(dc.est == 2){
+      tmp <- fast.DCBM.est(A.sonn, mat.BM, o+m, K, o, 
+                           p.sample = 1)
+    }else{
+      #psi.hat <- raw.out[raw.ind[,1] == r][[q]]$psi[[k.cand]]
+      tmp <- eigen.DCBM.est(A.sonn, mat.BM, o+m, K, o, 
+                            p.sample = 1)
+    }
+    
+    B.BM <- tmp$Bsum
+    psi.BM <- tmp$psi
+    mat.BM <- mat.BM[-(1:o)]
+    
+    message(paste0("Est. at s=",q, " finished"))
+    
+    return(list('gBM' = mat.BM,
+                'BBM' = B.BM,
+                'psiBM' = psi.BM))
+  },
+  mc.cores = ncore)
+  
+  g.BM <- list()
+  B.BM <- list()
+  psi.BM <- list()
+  
+  raw.mat <- cbind(raw.ind[rep(1:nrow(raw.ind), each = tau.size), ], 
+                   rep(1:tau.size, nrow(raw.ind)))
+  
+  for(r in 1:R){
+    g.BM[[r]] <- list()
+    B.BM[[r]] <- list()
+    psi.BM[[r]] <- list()
+    
+    for(tt in seq_along(tau.cand)){
+      tmp.est <- est.out[which(raw.mat[,3] == tt & raw.mat[,1] == r)]
+      B.BM[[r]][[tt]] <- 0
+      g.BM[[r]][[tt]] <- list()
+      psi.BM[[r]][[tt]] <- list()
+      
+      for(q in 1:s){
+        B.BM[[r]][[tt]] <- B.BM[[r]][[tt]] + 
+          tmp.est[[q]]$BBM/s
+        
+        g.BM[[r]][[tt]][[q]] <- tmp.est[[q]]$gBM
+        
+        psi.BM[[r]][[tt]][[q]] <- tmp.est[[q]]$psiBM
+      }
+    }
+  }
+  
+  non.size <- s*(s-1)/2
+  non.mat <- matrix(nrow = R*non.size*tau.size, ncol = 4)
+  cc <- 1
+  for(r in 1:R)
+    for(tt in seq_along(tau.cand))
+      for(p in 1:(s-1))
+        for(q in (p+1):s){
+          non.mat[cc, ] <- c(r, tt, p, q)
+          cc <- cc + 1
+        }
+  
+  L.all <- mclapply(1:nrow(non.mat), function(ii){
+    r <- non.mat[ii, 1]
+    tt <- non.mat[ii, 2]
+    p <- non.mat[ii, 3]
+    q <- non.mat[ii, 4]
+    
+    p.non <- non.over[[r]][((p-1)*m+1):(p*m)]
+    q.non <- non.over[[r]][((q-1)*m+1):(q*m)]
+    
+    A.non <- A[p.non, q.non]
+    
+    L.temp <- matrix(0, nrow = length(loss), ncol = 1)
+    row.names(L.temp) <- loss
+    colnames(L.temp) <- as.character(tau.cand[tt])
+    
+    P.BM <- B.BM[[r]][[tt]][g.BM[[r]][[tt]][[p]],
+                            g.BM[[r]][[tt]][[q]] ] *
+      tcrossprod(psi.BM[[r]][[tt]][[p]],
+                 psi.BM[[r]][[tt]][[q]])
+    
+    P.BM[P.BM < 1e-6] <- 1e-6
+    P.BM[P.BM > 1- 1e-6] <- 1 - 1e-6
+    
+    for(lq in seq_along(loss)){
+      tmp.nm <- loss[lq]
+      L.temp[tmp.nm, 1] <-  L.temp[tmp.nm, 1] +
+        do.call(loss[lq], list(as.numeric(A.non), P.BM))/(s*(s-1)*0.5)
+    }
+    
+    return(L.temp)},
+    mc.cores = ncore)
+  
+  L <- list()
+  
+  for(r in 1:R){
+    L[[r]] <- do.call('cbind', lapply(1:tau.size, function(tt){
+      Reduce('+', L.all[which(non.mat[,2] == tt & non.mat[,1] == r)])
+    }))
+    
+    row.names(L[[r]]) <- loss
+    colnames(L[[r]]) <- as.character(tau.cand)
+  }
+  
+  obj <- data.table(`Candidate Tau` = tau.cand)
+  
+  for(lq in seq_along(loss))
+    for(r in 1:R){
+      obj[[paste0(loss[lq], "-Rep=", r)]] <- 
+        as(rbind(L[[r]][loss[lq], ]), "vector")
+    }
+  
+  obj2 <- list()
+  
+  obj2[["Candidate Tau"]] <- tau.cand
+  
+  for(lq in seq_along(loss)){
+    
+    obj2[[paste0("tau.hat.each.rep (", loss[lq], ")")]] <- sapply(1:R, function(r){
+      tau.BM <- tau.cand[which.min(L[[r]][loss[lq],])]
+    })
+    
+    
+    obj2[[paste0(loss[lq], ".model")]] <- 
+      mean(obj2[[paste0("tau.hat.each.rep (", loss[lq], ")")]])
+  }
+  
+  return(c(list('loss' = obj), 
+           obj2))
+}
 
 
 
