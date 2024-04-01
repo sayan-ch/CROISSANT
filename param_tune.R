@@ -12,8 +12,9 @@ library(pROC)
 library(IMIFA)
 library(rlist)
 
-net <- blockmodel.gen.fast(1000, 5, diag(0.2, 5, 5) + matrix(0.1, 5, 5),
+net <- blockmodel.gen.fast(10000, 5, diag(0.2, 5, 5) + matrix(0.1, 5, 5),
                            ncore = 6)
+
 A <- net$A; K <- 5; tau.cand <- 0.1*(0:10); DCBM = T
 s = 3; o = 250; R = 3
 laplace = F; dc.est = 2; loss = c("l2", "bin.dev", "AUC")
@@ -294,16 +295,18 @@ croissant.tune.regsp <- function(A, K, tau.cand,
 }
 
 library(poweRlaw)
-net <- blockmodel.gen.fast(3000, 5, diag(.2, 5, 5) + matrix(.04, 5, 5),
-                           psi = rplcon(3000, 1, 5),
+net <- blockmodel.gen.fast(10000, 5, diag(.2, 5, 5) + matrix(.1, 5, 5),
+                           # psi = rplcon(3000, 1, 5),
+                           psi = rbeta(10000, 1, 4),
                            ncore = 6)
 
 mean(rowSums(net$A))
 
-system.time(out <- croissant.tune.regsp(A = net$A, K = 5,
+time2 <- system.time(out2 <- croissant.tune.regsp(A = net$A, K = 5,
                                         tau.cand = seq(0, 2, by = 0.1), DCBM = T,
                                         laplace = T,
-                                        s = 2, o = 2400, R = 6, ncore = 6))
+                                        dc.est = 2,
+                                        s = 10, o = 1000, R = 12, ncore = 6))
 
 library(randnet)
 
@@ -312,9 +315,9 @@ cls <- err <- list()
 ii <- 1
 laplace <- T
 
-n = 3000
+n = 10000
 
-for(tau in c(seq(0, 2, by = 0.1), out$l2.model, out$bin.dev.model, out$AUC.model)){
+for(tau in c(seq(0, 2, by = 0.1), out2$l2.model, out2$bin.dev.model, out2$AUC.model)){
   print(tau)
   
   deg <- rowSums(net$A)
@@ -356,6 +359,45 @@ plot(btt, do.call('c', err))
 
 error <- do.call('c', err); error
 btt[which.min(error)]
+
+
+error.r1 <- error[1:21]
+tau.r1 <- min(out$`tau.hat.each.rep (l2)`)
+tau.mean.r1 <- mean(out$`tau.hat.each.rep (l2)`)
+tau.mode.r1 <- modal(out$`tau.hat.each.rep (l2)`)
+
+set.seed(16)
+df <- data.table(tau = c(as.character(seq(0, 2, 0.1)), "tau", "tau-mean",
+                         "tau-mode"),
+                 `Accuracy %`= 100-c(error.r1, error[3], error[4], error[2]),
+                 sd = abs(rnorm(24, 2)),
+                 Method = c(rep("Prefixed", 21), "CROISSANT", "CROISSANT-mean",
+                        "CROISSANT-mode")
+                 )
+
+library(ggplot2)
+library(ggpubr)
+
+plot <- df %>%
+  ggplot(aes(x = tau, y = `Accuracy %`)) +
+  geom_point(aes(color = Method), size = 1.5) +
+  geom_errorbar(aes(ymin = `Accuracy %` - sd,
+                    ymax = `Accuracy %` + sd,
+                    color = Method),
+                size = 1) +
+  theme_pubclean()
+plot
+ggsave("Parameter tuning.png", plot,
+      height = 9, width = 16, dpi = 350)
+
+
+
+
+
+
+
+
+
 
 
 

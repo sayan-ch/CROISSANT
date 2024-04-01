@@ -1526,7 +1526,7 @@ croissant.latent <- function(A, d.cand, s, o, R,
     Z2.hat <- match.out[[ind2]]$Z.rot
     beta.hat <- (match.out[[ind1]]$beta.hat + match.out[[ind2]]$beta.hat)/2
     
-    log.hat <- beta.hat - cdist(Z1.hat, Z2.hat)
+    log.hat <- beta.hat - rdist::cdist(Z1.hat, Z2.hat)
     
     P.hat <- exp(log.hat)/(1+exp(log.hat))
     
